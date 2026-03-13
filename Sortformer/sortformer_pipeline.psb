@@ -1,0 +1,108 @@
+#!/bin/bash
+#PBS -N sortformer
+#PBS -l select=1:ncpus=4:ngpus=1:mem=24gb
+#PBS -l walltime=00:59:50
+#PBS -q normal
+#PBS -P Personal
+
+#PBS -o /home/users/ntu/d230009/scratch/Target_Speaker_DiCoW/Sortformer/logs/sortformer.log
+#PBS -e /home/users/ntu/d230009/scratch/Target_Speaker_DiCoW/Sortformer/logs/sortformer.err
+
+source /home/users/ntu/d230009/miniconda3/etc/profile.d/conda.sh
+
+conda activate nemo
+
+# --------------------------------
+# Root directory
+# --------------------------------
+
+ROOT_DIR="/home/users/ntu/d230009/scratch/Target_Speaker_DiCoW"
+PROJECT_ROOT=$ROOT_DIR/Sortformer
+
+cd $PROJECT_ROOT
+
+
+# --------------------------------
+# Streaming parameters
+# --------------------------------
+CHUNK_SIZE=6
+RIGHT_CONTEXT=7
+FIFO_SIZE=188
+UPDATE_PERIOD=144
+SPEAKER_CACHE_SIZE=188
+COLLAR=0
+
+STREAMING=true
+BYPASS_POSTPROCESSING=false
+
+
+# --------------------------------
+# Paths
+# --------------------------------
+MIXED_LIST_PATH="mixed_list.txt"
+ENROLLMENT_LIST_PATH="enrollment_list.txt"
+
+MODEL_PATH="./diar_streaming_sortformer_4spk-v2.1.nemo"
+
+DATASET_MANIFEST="./dataset_manifest.json"
+POSTPROCESSING_YAML="./postprocessing.yaml"
+
+OUT_RTTM_DIR="./predicted_rttms"
+OUTPUT_DIARISATION_MASK_DIR="./diarisation_masks"
+OUTPUT_TRANSCRIPTION_DIR="./output_transcriptions"
+
+
+# --------------------------------
+# 1️⃣ Generate manifest
+# --------------------------------
+echo "Generating dataset manifest..."
+
+python ${PROJECT_ROOT}/generate_manifest.py \
+    --paths2mixed_files ${MIXED_LIST_PATH} \
+    --paths2enrollment_files ${ENROLLMENT_LIST_PATH} \
+    --manifest_filepath ${DATASET_MANIFEST} \
+    --add_duration
+
+
+# --------------------------------
+# 2️⃣ Run Sortformer diarization
+# --------------------------------
+echo "Running streaming diarization..."
+
+python ${PROJECT_ROOT}/get_diarisation_mask.py \
+model_path=${MODEL_PATH} \
+dataset_manifest=${DATASET_MANIFEST} \
+batch_size=1 \
+chunk_len=${CHUNK_SIZE} \
+chunk_right_context=${RIGHT_CONTEXT} \
+fifo_len=${FIFO_SIZE} \
+spkcache_update_period=${UPDATE_PERIOD} \
+spkcache_len=${SPEAKER_CACHE_SIZE} \
+collar=${COLLAR} \
+bypass_postprocessing=${BYPASS_POSTPROCESSING} \
+postprocessing_yaml=${POSTPROCESSING_YAML} \
+out_rttm_dir=${OUT_RTTM_DIR} \
+no_der=true \
+async_streaming=${STREAMING} \
+output_diarisation_mask_dir=${OUTPUT_DIARISATION_MASK_DIR}
+
+
+# --------------------------------
+# 3️⃣ Run TS-DiCoW transcription
+# --------------------------------
+
+conda deactivate
+conda activate exp_ts_dicow
+
+echo $HF_HOME
+
+export PYTHONPATH=$ROOT_DIR/DiariZen:$ROOT_DIR/model:$PYTHONPATH
+
+echo "Running TS-DiCoW transcription..."
+
+python ${PROJECT_ROOT}/dicow_inference.py \
+    --manifest ${DATASET_MANIFEST} \
+    --diar_mask_dir ${OUTPUT_DIARISATION_MASK_DIR} \
+    --output_dir ${OUTPUT_TRANSCRIPTION_DIR}
+
+echo "Pipeline finished."
