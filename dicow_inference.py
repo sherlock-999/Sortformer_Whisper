@@ -2,7 +2,8 @@ import os
 import sys
 import torch
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
+from tqdm import tqdm
 
 from transformers import AutoTokenizer, AutoFeatureExtractor
 
@@ -87,6 +88,7 @@ class DiCoWTranscriber:
     def transcribe_with_masks(self, manifest_path: str, masks: Dict[str, torch.Tensor], output_dir: str):
         """
         Transcribe audio files using diarization masks for all speakers.
+        Outputs JSONL format for scoring_dicow.
         
         Args:
             manifest_path: Path to dataset_manifest.json
@@ -101,8 +103,11 @@ class DiCoWTranscriber:
         
         print(f"Processing {len(manifest_items)} audio files...")
         
+        hypothesis_multi = []
+        
         # Process each audio file
-        for item in manifest_items:
+        for item in tqdm(manifest_items):
+            print(f"\nProcessing: {item['audio_filepath']}")
             mixed_audio_path = item["audio_filepath"]
             mixed_audio_name = os.path.basename(mixed_audio_path).replace(".wav", "")
             
@@ -114,32 +119,104 @@ class DiCoWTranscriber:
             diarization_mask = masks[mixed_audio_name]
             num_speakers = diarization_mask.shape[0]
             
+            # Extract session_id from audio name (e.g., "sdm_ES2004a-2" -> "ES2004a")
+            session_id = self._extract_session_id(mixed_audio_name)
+            
             # Set mask on pipeline
             self.pipeline.diarization_mask = diarization_mask
             
-            # Process each speaker
-            for speaker_id in range(num_speakers):
-                print(f"\n  Processing Speaker {speaker_id}...")
+            # Run inference for all speakers
+            inputs = {
+                "audio_filepath": mixed_audio_path
+            }
+            result = self.pipeline(inputs, return_timestamps=True)
+            
+            # Get transcription list - one per speaker
+            speaker_transcriptions = result.get("per_spk_outputs", [])
+            
+            # Process each speaker's transcription
+            for spk_idx, speaker_transcription in enumerate(speaker_transcriptions):
+                if not speaker_transcription or speaker_transcription.strip() == '':
+                    continue
                 
-                # Run inference for this speaker
-                inputs = {
-                    "audio_filepath": mixed_audio_path,
-                    "target_speaker_id": speaker_id
-                }
-                result = self.pipeline(inputs, return_timestamps=True)
+                # Clean transcription using pipeline's postprocess_text
+                processed_text = result.get("text", [])
                 
-                # Get transcription for this speaker (pipeline returns list with 1 element per speaker)
-                speaker_transcription = result["per_spk_outputs"][0]
+                # Extract segments with timing
+                segments = self._extract_segments_with_timing(processed_text)
                 
-                # Save transcription with speaker ID
-                out_path = Path(output_dir) / f"{mixed_audio_name}_speaker{speaker_id}.txt"
-                with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(speaker_transcription)
+                speaker_id = f"speaker_{spk_idx}"
                 
-                print(f"  ✓ Saved Speaker {speaker_id}: {out_path}")
+                # Add each segment to hypothesis_multi with actual timing
+                for start_time, end_time, text in segments:
+                    if text.strip():
+                        hypothesis_multi.append({
+                            "session_id": session_id,
+                            "speaker": speaker_id,
+                            "start_time": start_time,
+                            "end_time": end_time,
+                            "words": text
+                        })
+                
+                if segments:
+                    print(f"  ✓ {session_id} - {speaker_id}: {len(segments)} segments")
             
             # Reset mask for next iteration
             self.pipeline.diarization_mask = None
+        
+        # Write JSONL files
+        multi_path = Path(output_dir) / "hypothesis_multi.jsonl"
+        
+        with open(multi_path, "w", encoding="utf-8") as f:
+            for item in hypothesis_multi:
+                f.write(json.dumps(item) + "\n")
+        
+        print(f"\n✓ Saved {len(hypothesis_multi)} predictions to {multi_path}")
+    
+    @staticmethod
+    def _extract_session_id(audio_name: str) -> str:
+        """Extract session ID from audio filename.
+        Examples: sdm_ES2004a-2 -> ES2004a
+        """
+        parts = audio_name.split("_")
+        if len(parts) >= 2:
+            session = parts[-1].rsplit("-", 1)[0]
+            return session
+        return audio_name
+    
+    @staticmethod
+    def _extract_segments_with_timing(processed_text: str) -> List[Tuple[float, float, str]]:
+        """
+        Extract segments with timing from processed text.
+        Example: '<|237.28|>text1<|245.92|><|246.24|>text2<|250.0|>'
+        Returns: [(237.28, 245.92, 'text1'), (246.24, 250.0, 'text2')]
+        """
+        import re
+        
+        # Find segments with timing pairs: <|start|>...text...<|end|>
+        segments = []
+        pattern = r'<\|([\d.]+)\|>'
+        
+        # Find all timestamps and their positions
+        matches = list(re.finditer(pattern, processed_text))
+        
+        # Group timestamps in pairs (start, end) and extract text between them
+        for i in range(0, len(matches) - 1, 2):
+            start_match = matches[i]
+            end_match = matches[i + 1]
+            
+            start_time = float(start_match.group(1))
+            end_time = float(end_match.group(1))
+            
+            # Extract text between the two timestamps
+            text_start = start_match.end()
+            text_end = end_match.start()
+            text = processed_text[text_start:text_end].strip()
+            
+            if text:  # Only add non-empty segments
+                segments.append((start_time, end_time, text))
+        
+        return segments if segments else [(0.0, 0.0, processed_text)]
 
 
 def main():

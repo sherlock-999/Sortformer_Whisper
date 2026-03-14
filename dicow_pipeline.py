@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Dict, Optional
 
 import torch
@@ -97,11 +98,6 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
         print("samples['input_features'] shape:", samples["input_features"].shape)
         print()
 
-        # Get target speaker ID from inputs or default to 0
-        target_speaker_id = inputs.get("target_speaker_id", 0)
-        print(f"Target speaker ID: {target_speaker_id}")
-        samples["target_speaker_id"] = target_speaker_id
-
         ####################################################
         # 4️⃣ Create STNO masks
         ####################################################
@@ -153,101 +149,151 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
     # FORWARD
     ############################################
     def _forward(self, model_inputs, return_timestamps=False, **generate_kwargs):
-
-        print("+--------------------------------+")
-        print("|             Forward            |")
-        print("+--------------------------------+")
-
         attention_mask = model_inputs.pop("attention_mask", None)
         stride = model_inputs.pop("stride", None)
         segment_size = model_inputs.pop("segment_size", None)
         is_last = model_inputs.pop("is_last")
 
-        target_speaker_id = model_inputs.pop("target_speaker_id")
-
         if stride is not None and segment_size is not None:
             raise ValueError("segment_size must be used only when stride is None")
 
+        # Consume values so we can let extra information flow freely through
+        # the pipeline (important for `partial` in microphone)
         if "input_features" in model_inputs:
             inputs = model_inputs.pop("input_features")
         elif "input_values" in model_inputs:
             inputs = model_inputs.pop("input_values")
         else:
             raise ValueError(
-                "Model requires `input_features` or `input_values`"
+                "Seq2Seq speech recognition model requires either a "
+                f"`input_features` or `input_values` key, but only has {model_inputs.keys()}"
             )
-        
-        # Handle stno_mask if present
-        stno_mask = model_inputs.pop("stno_mask", None)
 
-        ############################################
-        # SELECT TARGET SPEAKER
-        ############################################
-        
-        # Select the target speaker's features from the batch
-        print(f"inputs shape before indexing: {inputs.shape}")
-        print(f"target_speaker_id: {target_speaker_id}")
-        
-        inputs = inputs[target_speaker_id].unsqueeze(0)
-
-        if attention_mask is not None:
-            attention_mask = attention_mask[target_speaker_id].unsqueeze(0)
-        
-        if stno_mask is not None:
-            stno_mask = stno_mask[target_speaker_id].unsqueeze(0)
-            model_inputs["stno_mask"] = stno_mask
-
-        ############################################
-        # WHISPER TIMESTAMP OPTIONS
-        ############################################
-
+        # custom processing for Whisper timestamps and word-level timestamps
         if return_timestamps and self.type == "seq2seq_whisper":
-
             generate_kwargs["return_timestamps"] = return_timestamps
-
             if return_timestamps == "word":
                 generate_kwargs["return_token_timestamps"] = True
                 generate_kwargs["return_segments"] = True
-
             generate_kwargs["input_features"] = inputs
-
-        ############################################
-        # GENERATE
-        ############################################
 
         tokens = self.model.generate(
             attention_mask=attention_mask,
             **generate_kwargs,
             **model_inputs,
         )
+        # whisper longform generation stores timestamps in "segments"
+        if return_timestamps == "word" and self.type == "seq2seq_whisper":
+            if "segments" not in tokens:
+                out = {"tokens": tokens["sequences"], "token_timestamps": tokens["token_timestamps"]}
+            else:
+                token_timestamps = [
+                    torch.cat([segment["token_timestamps"] for segment in segment_list])
+                    for segment_list in tokens["segments"]
+                ]
+                out = {"tokens": tokens["sequences"], "token_timestamps": token_timestamps}
+        else:
+            out = {"tokens": tokens}
+        if self.type == "seq2seq_whisper":
+            if stride is not None:
+                out["stride"] = stride
 
-        return {
-            "is_last": is_last,
-            "tokens": tokens
-        }
+        # Leftover
+        extra = model_inputs
+        return {"is_last": is_last, **out, **extra}
 
-    ############################################
-    # POSTPROCESS
-    ############################################
+    @staticmethod
+    def postprocess_text(input_string):
+        pattern = r"<\|([\d.]+)\|>"
+        matches = re.finditer(pattern, input_string)
+        timestamps = [(float(match.group(1)), match.start(), match.end()) for match in matches]
+        if not timestamps or len(timestamps) <= 2:
+            return input_string
+
+        # The whole algorithm boils down to either removing the entire chain of timestamps - the case where all of them are the same (i.e. ...<a><a><a>... -> ......)
+        # or removing all but the corner ones (i.e. <a><b><c><c><d> -> <a><d>) - the case where we have end and start timestamps and some rubbish in-between.
+
+        processed_timestamps = []
+        i = 0
+        while i < len(timestamps):
+            ts, st, et = timestamps[i]
+
+            if i < len(timestamps) - 1 or processed_timestamps[-1][-1] != st:
+                processed_timestamps.append((ts, st, et))
+
+            if i == len(timestamps) - 1:
+                break
+
+            j = i + 1
+            nts, nst, net = timestamps[j]
+            all_equal_ts = nts == ts
+            prev_et = et
+            while nst - prev_et == 0:
+                # Skip all but the last timestamp. If the last in the chain has the same TS as the processed_timestamps tail, pop processed_timestamps.
+                # If not, append it while skipping all the previous ones.
+                # In other words, keep appending (-2, X, X) as long as the next one is in the chain and then decide what to do with the last one if the next one is not in the chain.
+
+                if j == len(timestamps) - 1:
+                    if net == len(input_string) and prev_et != nst:
+                        processed_timestamps.append((nts, nst, net))
+                        j += 1
+                    break
+                else:
+                    if timestamps[j + 1][1] - net == 0:
+                        processed_timestamps.append((-2, nst, net))
+                    else:
+                        if all_equal_ts:
+                            # If there's a chain of eq timestamps at the beginning, we need to keep at least one.
+                            if i != 0:
+                                processed_timestamps[i] = (-1, st, et)
+                            processed_timestamps.append((-2, nst, net))
+                        else:
+                            # If there's a chain of tags at the beginning with all ts not being equal, we need to keep the last one.
+                            if i == 0:
+                                processed_timestamps[i] = (-2, st, et)
+                            processed_timestamps.append((nts, nst, net))
+                        j += 1
+                        break
+
+                j += 1
+                prev_et = net
+                nts, nst, net = timestamps[j]
+                all_equal_ts = all_equal_ts and nts == ts
+
+            i = j
+
+        result = []
+        prev_end = 0
+        for i, (ts, st, et) in enumerate(processed_timestamps):
+            result.append(f'{input_string[prev_end:st]}')
+            if ts == -1:
+                result.append(' ')
+            elif ts == -2:
+                # Empty string, so no need to append anything
+                pass
+            else:
+                result.append(f'<|{ts:.2f}|>')
+            prev_end = et
+
+        return "".join(result)
+
     def postprocess(
-        self,
-        model_outputs,
-        decoder_kwargs: Optional[Dict] = None,
-        return_timestamps=None,
-        return_language=None
+            self, model_outputs, decoder_kwargs: Optional[Dict] = None, return_timestamps=None, return_language=None
     ):
-
-        print("+--------------------------------+")
-        print("|          Postprocessing        |")
-        print("+--------------------------------+")
-
         per_spk_outputs = self.tokenizer.batch_decode(
-            model_outputs[0]['tokens'],
-            decode_with_timestamps=True,
-            skip_special_tokens=True
+            model_outputs[0]['tokens'], decode_with_timestamps=True, skip_special_tokens=True
         )
+        formatted_lines = []
+        for spk, text in enumerate(per_spk_outputs):
+            processed_text = self.postprocess_text(text)
 
-        return {
-            "text": None,
-            "per_spk_outputs": per_spk_outputs
-        }
+            # Split on each timestamp pair
+            # This regex finds "<|start|>...<|end|>" pairs with everything inside
+            segments = re.findall(r"(<\|\d+\.\d+\|>.*?<\|\d+\.\d+\|>)", processed_text)
+            # Build the output for this speaker
+            speaker_header = f"🗣️ Speaker {spk}:\n"
+            speaker_body = "\n".join(segments)
+            formatted_lines.append(f"{speaker_header}{speaker_body}")
+
+        full_text = "\n\n".join(formatted_lines)
+        return {"text": full_text, "per_spk_outputs": per_spk_outputs}
