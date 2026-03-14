@@ -28,7 +28,7 @@ from omegaconf import OmegaConf
 class Sortformer_Whisper_Pipeline:
     """Main pipeline orchestrator."""
     
-    def __init__(self, config_path: str = "Sortformer/config.ini"):
+    def __init__(self, config_path: str = "config.ini"):
         """
         Initialize pipeline.
         
