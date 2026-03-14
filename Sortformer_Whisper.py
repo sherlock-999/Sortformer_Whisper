@@ -14,14 +14,10 @@ import configparser
 from pathlib import Path
 from typing import Dict, Optional
 
-# Add Sortformer directory to path for imports
-sortformer_dir = str(Path(__file__).parent / "Sortformer")
-if sortformer_dir not in sys.path:
-    sys.path.insert(0, sortformer_dir)
 
 from Sortformer.generate_manifest import ManifestGenerator
 from Sortformer.get_diarisation_mask import SortformerDiarizer, DiarizationConfig
-from Sortformer.dicow_inference import DiCoWTranscriber
+from dicow_inference import DiCoWTranscriber
 from omegaconf import OmegaConf
 
 
