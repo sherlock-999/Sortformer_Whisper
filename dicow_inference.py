@@ -85,7 +85,7 @@ class DiCoWTranscriber:
     
 
 
-    def transcribe_with_masks(self, manifest_path: str, masks: Dict[str, torch.Tensor], output_dir: str):
+    def transcribe_with_masks(self, manifest_path: str, masks: Dict[str, torch.Tensor], output_dir: str, output_filename: str = "hypothesis_multi.jsonl"):
         """
         Transcribe audio files using diarization masks for all speakers.
         Outputs JSONL format for scoring_dicow.
@@ -94,6 +94,7 @@ class DiCoWTranscriber:
             manifest_path: Path to dataset_manifest.json
             masks: Dict[audio_name] = mask (torch.Tensor with shape [num_speakers, num_frames])
             output_dir: Output directory for transcriptions
+            output_filename: Name for the output JSONL file (default: "hypothesis_multi.jsonl")
         """
         os.makedirs(output_dir, exist_ok=True)
         
@@ -119,8 +120,8 @@ class DiCoWTranscriber:
             diarization_mask = masks[mixed_audio_name]
             num_speakers = diarization_mask.shape[0]
             
-            # Extract session_id from audio name (e.g., "sdm_ES2004a-2" -> "ES2004a")
-            session_id = self._extract_session_id(mixed_audio_name)
+            # session_id = file name
+            session_id = mixed_audio_name
             
             # Set mask on pipeline
             self.pipeline.diarization_mask = diarization_mask
@@ -140,7 +141,7 @@ class DiCoWTranscriber:
                     continue
                 
                 # Clean transcription using pipeline's postprocess_text
-                processed_text = result.get("text", [])
+                processed_text = speaker_transcription
                 
                 # Extract segments with timing
                 segments = self._extract_segments_with_timing(processed_text)
@@ -165,24 +166,13 @@ class DiCoWTranscriber:
             self.pipeline.diarization_mask = None
         
         # Write JSONL files
-        multi_path = Path(output_dir) / "hypothesis_multi.jsonl"
+        multi_path = Path(output_dir) / output_filename
         
         with open(multi_path, "w", encoding="utf-8") as f:
             for item in hypothesis_multi:
                 f.write(json.dumps(item) + "\n")
         
         print(f"\n✓ Saved {len(hypothesis_multi)} predictions to {multi_path}")
-    
-    @staticmethod
-    def _extract_session_id(audio_name: str) -> str:
-        """Extract session ID from audio filename.
-        Examples: sdm_ES2004a-2 -> ES2004a
-        """
-        parts = audio_name.split("_")
-        if len(parts) >= 2:
-            session = parts[-1].rsplit("-", 1)[0]
-            return session
-        return audio_name
     
     @staticmethod
     def _extract_segments_with_timing(processed_text: str) -> List[Tuple[float, float, str]]:
@@ -224,6 +214,7 @@ def main():
     parser.add_argument("--manifest", type=str, required=True, help="Path to manifest JSONL")
     parser.add_argument("--diar_mask_dir", type=str, required=True, help="Directory containing diarization masks (.pt)")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save transcriptions")
+    parser.add_argument("--output_filename", type=str, default="hypothesis_multi.jsonl", help="Output JSONL filename (default: hypothesis_multi.jsonl)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

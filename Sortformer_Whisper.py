@@ -128,7 +128,7 @@ class Sortformer_Whisper_Pipeline:
 
 
 
-    def step3_run_transcription(self, manifest_path: str, masks: Dict[str, torch.Tensor], output_dir: str):
+    def step3_run_transcription(self, manifest_path: str, masks: Dict[str, torch.Tensor], output_dir: str, output_filename: str = "hypothesis_multi.jsonl"):
         """
         STEP 3: Run DiCoW transcription with masks (in-memory, no .pt files).
         
@@ -136,30 +136,33 @@ class Sortformer_Whisper_Pipeline:
             manifest_path: Path to dataset_manifest.json
             masks: Dict[audio_name] = mask from step 2
             output_dir: Output directory for transcriptions
+            output_filename: Name for the output JSONL file (default: "hypothesis_multi.jsonl")
         """
         print("\n" + "="*60)
         print("STEP 3: Running DiCoW Transcription")
         print("="*60)
         print(f"Masks: {len(masks)} audio files (in memory)")
         print(f"Output: {output_dir}")
+        print(f"Output filename: {output_filename}")
         
         os.makedirs(output_dir, exist_ok=True)
         
         # Pass masks directly to transcriber - no .pt files needed
-        self.transcriber.transcribe_with_masks(manifest_path, masks, output_dir)
+        self.transcriber.transcribe_with_masks(manifest_path, masks, output_dir, output_filename)
         
         print(f"✓ Transcriptions saved to {output_dir}")
         print(f"✓ All masks processed directly from memory (no temp files)")
     
 
     
-    def run_pipeline(self, mixed_list_path: str = None, output_dir: str = None):
+    def run_pipeline(self, mixed_list_path: str = None, output_dir: str = None, output_filename: str = "hypothesis_multi.jsonl"):
         """
         Run complete 3-step pipeline.
         
         Args:
             mixed_list_path: Path to mixed_list.txt (uses config if None)
             output_dir: Output directory (uses config if None)
+            output_filename: Name for the output JSONL file (default: "hypothesis_multi.jsonl")
         """
         if mixed_list_path is None:
             mixed_list_path = self.config.get('DEFAULT', 'MIXED_LIST_PATH')
@@ -167,11 +170,14 @@ class Sortformer_Whisper_Pipeline:
         if output_dir is None:
             output_dir = self.config.get('DEFAULT', 'OUTPUT_TRANSCRIPTION_DIR')
         
-        manifest_path = self.config.get('DEFAULT', 'DATASET_MANIFEST')
+        # Generate manifest filename from output_filename (e.g., "nsf_hypothesis_multi.jsonl" -> "nsf_hypothesis_multi_manifest.json")
+        manifest_filename = output_filename.replace('.jsonl', '_manifest.json')
+        manifest_dir = self.config.get('DEFAULT', 'OUTPUT_TRANSCRIPTION_DIR')
+        manifest_path = os.path.join(manifest_dir, manifest_filename)
         
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
-        os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+        os.makedirs(manifest_dir, exist_ok=True)
         
         # Step 1
         self.step1_generate_manifest(mixed_list_path, manifest_path)
@@ -180,7 +186,7 @@ class Sortformer_Whisper_Pipeline:
         masks = self.step2_run_diarization(manifest_path)
         
         # Step 3
-        self.step3_run_transcription(manifest_path, masks, output_dir)
+        self.step3_run_transcription(manifest_path, masks, output_dir, output_filename)
         
         print("\n" + "="*60)
         print("✓ PIPELINE COMPLETE")
@@ -194,11 +200,12 @@ def main():
     parser.add_argument("--config", default="Sortformer/config.ini")
     parser.add_argument("--mixed_list", help="Path to mixed_list.txt")
     parser.add_argument("--output_dir", help="Output directory for transcriptions")
+    parser.add_argument("--output_filename", default="hypothesis_multi.jsonl", help="Output JSONL filename (default: hypothesis_multi.jsonl)")
     
     args = parser.parse_args()
     
     pipeline = Sortformer_Whisper_Pipeline(args.config)
-    pipeline.run_pipeline(args.mixed_list, args.output_dir)
+    pipeline.run_pipeline(args.mixed_list, args.output_dir, args.output_filename)
 
 
 if __name__ == "__main__":
