@@ -3,6 +3,8 @@ import re
 from typing import Dict, Optional
 
 import torch
+import torch.nn.functional as F
+import numpy as np
 import gradio as gr
 from transformers.pipelines.automatic_speech_recognition import AutomaticSpeechRecognitionPipeline
 from librosa import load as libr_load
@@ -82,7 +84,6 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
             print(f"Loaded mask from disk: {diar_mask_path}")
 
         print("diarization_mask shape:", diarization_mask.shape)
-        print()
 
         ####################################################
         # 3️⃣ Run base Whisper preprocessing
@@ -110,6 +111,17 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
             stno_mask = self.get_stno_mask(diarization_mask, i)
             stno_masks.append(stno_mask)
         stno_masks = torch.stack(stno_masks, axis=0)
+
+        # Ensure the STNO masks align with the encoder time dimension (1500 for Whisper).
+        target_len = self.model.model.encoder.embed_positions.weight.shape[0]
+        # Ensure the STNO masks align with the encoder time dimension (1500 for Whisper).
+        if stno_masks.shape[2] != target_len:
+            stno_masks = F.interpolate(
+                stno_masks.float(),
+                size=target_len,
+                mode="nearest",
+            )
+            print(f"Resampled stno_masks from length {stno_masks.shape[2]} to {target_len}")
 
         print("stno_masks shape:", stno_masks.shape)
         print()
