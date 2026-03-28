@@ -44,6 +44,7 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
         super().__init__(*args, **kwargs)
         self.speaker_embedding_model = speaker_embedding_model
         self.type = "seq2seq_whisper"
+        self.diarization_mask = None
 
     ############################################
     # PREPROCESS
@@ -104,6 +105,20 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
         ####################################################
         print("3. Creating STNO masks...")
 
+        # Align diarization mask length to mel features (same as original DiCoW pipeline).
+        # Original builds the mask at exactly input_features.shape[-1] // 2 by zero-initialising
+        # and filling speech regions, so we match that: pad with zeros (silence) or trim.
+        target_len = samples["input_features"].shape[-1] // 2
+        current_len = diarization_mask.shape[-1]
+        if current_len < target_len:
+            pad = torch.zeros(diarization_mask.shape[0], target_len - current_len,
+                              dtype=diarization_mask.dtype, device=diarization_mask.device)
+            diarization_mask = torch.cat([diarization_mask, pad], dim=-1)
+            print(f"Zero-padded diarization_mask from {current_len} to {target_len} frames")
+        elif current_len > target_len:
+            diarization_mask = diarization_mask[:, :target_len]
+            print(f"Trimmed diarization_mask from {current_len} to {target_len} frames")
+
         num_speakers = diarization_mask.shape[0]
 
         stno_masks = []
@@ -112,6 +127,7 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
             stno_masks.append(stno_mask)
         stno_masks = torch.stack(stno_masks, axis=0)
 
+        '''
         # Ensure the STNO masks align with the encoder time dimension (1500 for Whisper).
         target_len = self.model.model.encoder.embed_positions.weight.shape[0]
         # Ensure the STNO masks align with the encoder time dimension (1500 for Whisper).
@@ -122,7 +138,8 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
                 mode="nearest",
             )
             print(f"Resampled stno_masks from length {stno_masks.shape[2]} to {target_len}")
-
+        '''
+        
         print("stno_masks shape:", stno_masks.shape)
         print()
 

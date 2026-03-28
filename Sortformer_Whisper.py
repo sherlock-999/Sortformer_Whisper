@@ -187,10 +187,12 @@ class Sortformer_Whisper_Pipeline:
         
         # Step 3
         self.step3_run_transcription(manifest_path, masks, output_dir, output_filename)
-        
+
         print("\n" + "="*60)
         print("✓ PIPELINE COMPLETE")
         print("="*60)
+
+        return masks
 
 
 def main():
