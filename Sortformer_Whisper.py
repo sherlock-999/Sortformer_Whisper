@@ -14,6 +14,9 @@ import configparser
 from pathlib import Path
 from typing import Dict, Optional
 
+from librosa import load as libr_load
+from soundfile import write as sf_write
+
 
 from Sortformer.generate_manifest import ManifestGenerator
 from Sortformer.get_diarisation_mask import SortformerDiarizer, DiarizationConfig
@@ -89,7 +92,18 @@ class Sortformer_Whisper_Pipeline:
         print("STEP 2: Running Sortformer Diarization")
         print("="*60)
         print(f"Input: {manifest_path}")
-        
+
+        # Resample all audio files to 16kHz before Sortformer runs
+        print("Resampling audio files to 16kHz...")
+        with open(manifest_path, "r") as f:
+            manifest_items = [json.loads(line) for line in f]
+        for item in manifest_items:
+            audio_path = item["audio_filepath"]
+            audio, _ = libr_load(audio_path, sr=16000, mono=True)
+            sf_write(audio_path, audio, 16000, format="wav")
+            print(f"  Resampled: {audio_path}")
+        print("✓ Resampling complete")
+
         # Create config from ini
         cfg = DiarizationConfig()
         cfg.model_path = self.config.get('DEFAULT', 'SORTFORMER_MODEL_PATH')
