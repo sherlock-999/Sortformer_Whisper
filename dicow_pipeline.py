@@ -108,8 +108,6 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
         # Align diarization mask length to mel features (same as original DiCoW pipeline).
         # Original builds the mask at exactly input_features.shape[-1] // 2 by zero-initialising
         # and filling speech regions, so we match that: pad with zeros (silence) or trim.
-        '''
-
         target_len = samples["input_features"].shape[-1] // 2
         current_len = diarization_mask.shape[-1]
         if current_len < target_len:
@@ -120,7 +118,7 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
         elif current_len > target_len:
             diarization_mask = diarization_mask[:, :target_len]
             print(f"Trimmed diarization_mask from {current_len} to {target_len} frames")
-        '''
+
         
         num_speakers = diarization_mask.shape[0]
 
@@ -129,19 +127,6 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
             stno_mask = self.get_stno_mask(diarization_mask, i)
             stno_masks.append(stno_mask)
         stno_masks = torch.stack(stno_masks, axis=0)
-
-
-        # Ensure the STNO masks align with the encoder time dimension (1500 for Whisper).
-        target_len = self.model.model.encoder.embed_positions.weight.shape[0]
-        # Ensure the STNO masks align with the encoder time dimension (1500 for Whisper).
-        if stno_masks.shape[2] != target_len:
-            stno_masks = F.interpolate(
-                stno_masks.float(),
-                size=target_len,
-                mode="nearest",
-            )
-            print(f"Resampled stno_masks from length {stno_masks.shape[2]} to {target_len}")
-        
         
         print("stno_masks shape:", stno_masks.shape)
         print()
