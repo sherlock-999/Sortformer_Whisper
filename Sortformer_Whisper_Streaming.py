@@ -242,14 +242,32 @@ class Sortformer_Whisper_Streaming_Pipeline:
     # ------------------------------------------------------------------
     def run_pipeline(
         self,
-        audio_paths: List[str],
+        mixed_list_path: str = None,
         output_dir: str = None,
         output_filename: str = None,
         transcription_interval_s: float = None,
     ):
         """
         Run streaming pipeline on a list of audio files and write output JSONL.
+
+        Args:
+            mixed_list_path: path to a text file with one audio path per line
+                             (same format as Sortformer_Whisper.run_pipeline).
+            output_dir:      override config output directory.
+            output_filename: override config output filename.
+            transcription_interval_s: override config transcription interval.
+
+        Returns:
+            List[dict]: all output segments (session_id, speaker, start_time, end_time, words).
         """
+        if mixed_list_path is None:
+            mixed_list_path = self.cfg.pipeline.get("mixed_list_path", None)
+        if mixed_list_path is None:
+            raise ValueError("mixed_list_path must be provided")
+
+        with open(mixed_list_path) as f:
+            audio_paths = [line.strip() for line in f if line.strip()]
+
         out_dir  = output_dir      or self.cfg.pipeline.output_dir
         out_file = output_filename or self.cfg.pipeline.output_filename
         os.makedirs(out_dir, exist_ok=True)
@@ -283,8 +301,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="True streaming Sortformer + DiCoW pipeline"
     )
-    parser.add_argument("audio_paths", nargs="+",
-                        help="Path(s) to 16kHz mono WAV file(s)")
+    parser.add_argument("mixed_list_path",
+                        help="Path to text file with one audio path per line")
     parser.add_argument("--config",          default="config.yaml",
                         help="Path to config.yaml (default: config.yaml)")
     parser.add_argument("--output_dir",      default=None,
