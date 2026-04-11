@@ -22,8 +22,9 @@ sortformer:
   # How often (in diar-frames) the oldest FIFO frames are promoted to speaker cache
   spkcache_update_period: 144
 
-  # Sigmoid threshold for binarising Sortformer output probabilities
-  pred_threshold: 0.5
+  # Path to postprocessing YAML (onset/offset hysteresis, min_duration, etc.)
+  # Used when converting raw Sortformer predictions to the DiCoW diarization mask.
+  postprocessing_yaml: /home/users/ntu/d230009/scratch/Sortformer_Whisper/Sortformer/postprocessing.yaml
 
 # -----------------------------------------------------------------------------
 # DiCoW transcription model
