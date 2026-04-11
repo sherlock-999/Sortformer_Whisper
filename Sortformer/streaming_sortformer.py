@@ -109,9 +109,9 @@ class StreamingSortformer:
                           Defaults to len(audio_chunk) when not provided.
 
         Returns:
-            mask_chunk: binary float32 tensor of shape [n_speakers, new_frames] on CPU.
-                        1 = speaker active, 0 = speaker silent.
-                        new_frames is typically cfg.chunk_len but may vary near file end.
+            preds: float32 tensor of shape [n_speakers, new_frames] on CPU.
+                   Raw sigmoid probabilities in [0, 1].
+                   new_frames is typically cfg.chunk_len but may vary near file end.
         """
         if self._streaming_state is None:
             raise RuntimeError("Call reset() before process_chunk().")
@@ -141,7 +141,7 @@ class StreamingSortformer:
                 right_offset=0,
             )
 
-        # Extract only the new frames: [n_spk, new_frames], binarised
-        new_frames  = self._total_preds[0, prev_n_frames:, :].T.cpu()  # [n_spk, new_frames]
-        mask_chunk  = (new_frames > self.pred_threshold).float()
-        return mask_chunk
+        # Extract only the new frames: [n_spk, new_frames], raw sigmoid values.
+        # Caller is responsible for post-processing (thresholding / onset-offset hysteresis).
+        new_frames = self._total_preds[0, prev_n_frames:, :].T.cpu()  # [n_spk, new_frames]
+        return new_frames

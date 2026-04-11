@@ -27,6 +27,12 @@ import torch
 import librosa
 from omegaconf import OmegaConf
 
+from nemo.collections.asr.parts.utils.vad_utils import (
+    load_postprocessing_from_yaml,
+    predlist_to_timestamps,
+)
+from nemo.collections.asr.parts.utils.speaker_utils import timestamps_to_pyannote_object
+
 from Sortformer.streaming_sortformer import StreamingSortformer
 from dicow_inference import DiCoWTranscriber
 
@@ -53,7 +59,80 @@ class Sortformer_Whisper_Streaming_Pipeline:
         print("\nLoading models...")
         self.sortformer  = StreamingSortformer(self.cfg.sortformer)
         self.transcriber = DiCoWTranscriber(self.cfg.dicow.model_path, device_str)
+        self.postprocessing_cfg = load_postprocessing_from_yaml(
+            self.cfg.sortformer.postprocessing_yaml
+        )
         print("✓ Models loaded.\n")
+
+    # ------------------------------------------------------------------
+    def _preds_to_dicow_mask(
+        self,
+        accumulated_preds: torch.Tensor,
+        audio_duration_s: float,
+        session_id: str,
+    ) -> torch.Tensor:
+        """
+        Convert accumulated raw Sortformer sigmoid predictions to a 50fps binary mask
+        suitable for DiCoW, using the same postprocessing pipeline as the offline
+        get_diarisation_mask.py (predlist_to_timestamps → timestamps_to_pyannote_object).
+
+        Args:
+            accumulated_preds : [n_spk, n_frames] raw sigmoid values at 12.5fps
+            audio_duration_s  : wall-clock duration of the accumulated window in seconds
+            session_id        : unique ID for this window (used by pyannote internals)
+
+        Returns:
+            50fps binary mask tensor of shape [n_spk, n_frames_50fps]
+        """
+        # predlist_to_timestamps expects [(1, n_frames, n_spk), ...]
+        # unit_10ms_frame_count=8 → each frame = 8×10ms = 80ms = 12.5fps
+        preds_for_pp = accumulated_preds.T.unsqueeze(0)  # [1, n_frames, n_spk]
+
+        audio_rttm_map = {
+            session_id: {
+                "audio_filepath": session_id,
+                "offset":         0.0,
+                "duration":       audio_duration_s,
+                "rttm_filepath":  None,
+            }
+        }
+
+        cfg_vad = OmegaConf.structured(self.postprocessing_cfg)
+        speaker_timestamps_list = predlist_to_timestamps(
+            batch_preds_list=[preds_for_pp],
+            audio_rttm_map_dict=audio_rttm_map,
+            cfg_vad_params=cfg_vad,
+            unit_10ms_frame_count=8,
+            bypass_postprocessing=False,
+        )
+        # speaker_timestamps_list[0] is a list of per-speaker segment lists
+        speaker_timestamps = speaker_timestamps_list[0]
+
+        all_hypothesis = []
+        timestamps_to_pyannote_object(
+            speaker_timestamps=speaker_timestamps,
+            uniq_id=session_id,
+            audio_rttm_values=audio_rttm_map[session_id],
+            all_hypothesis=all_hypothesis,
+            all_reference=[],
+            all_uems=[],
+            out_rttm_dir=None,
+        )
+
+        # Convert pyannote annotation → 50fps binary mask
+        # (same logic as get_diarisation_mask.py SortformerDiarizer.get_masks)
+        annotation = all_hypothesis[0][1]  # pyannote Annotation object
+        n_frames_50fps = round(audio_duration_s * 50)
+        n_spk = accumulated_preds.shape[0]
+        dicow_mask = torch.zeros(n_spk, n_frames_50fps)
+
+        for spk_idx, spk_label in enumerate(annotation.labels()):
+            for seg in annotation.label_timeline(spk_label):
+                start_f = max(0, round(seg.start * 50))
+                end_f   = min(n_frames_50fps, round(seg.end * 50))
+                dicow_mask[spk_idx, start_f:end_f] = 1.0
+
+        return dicow_mask
 
     # ------------------------------------------------------------------
     def process_audio_file(
@@ -72,7 +151,6 @@ class Sortformer_Whisper_Streaming_Pipeline:
             list of output dicts (session_id, speaker, start_time, end_time, words)
         """
         interval_s = transcription_interval_s or self.cfg.pipeline.transcription_interval_s
-        language   = self.cfg.dicow.language
         session_id = os.path.basename(audio_path).replace(".wav", "")
 
         print(f"\n{'='*60}")
@@ -115,7 +193,7 @@ class Sortformer_Whisper_Streaming_Pipeline:
                 audio_chunk = np.pad(audio_chunk, (0, chunk_samples - true_length))
 
             # ---- 1. Sortformer: one streaming step ----
-            # Returns [n_spk, new_frames] binary mask for this chunk only.
+            # Returns [n_spk, new_frames] raw sigmoid predictions for this chunk.
             # Speaker cache updated internally — no external state management needed.
             mask_chunk = self.sortformer.process_chunk(audio_chunk, true_length=true_length)
 
@@ -130,10 +208,14 @@ class Sortformer_Whisper_Streaming_Pipeline:
 
             # ---- 2. Transcribe when interval is full or audio exhausted ----
             if len(accumulated_audio) >= interval_samples or pos >= len(audio_full):
-                window_end_s = window_start_s + len(accumulated_audio) / SAMPLING_RATE
+                window_end_s      = window_start_s + len(accumulated_audio) / SAMPLING_RATE
+                window_duration_s = len(accumulated_audio) / SAMPLING_RATE
 
-                # Sortformer: 12.5 fps (subsampling 8 × 10ms). DiCoW expects 50 fps. Upsample 4×.
-                dicow_mask = accumulated_mask.repeat_interleave(4, dim=1)
+                # Convert raw Sortformer sigmoid preds → 50fps DiCoW mask via the
+                # same postprocessing pipeline used in offline get_diarisation_mask.py
+                dicow_mask = self._preds_to_dicow_mask(
+                    accumulated_mask, window_duration_s, session_id
+                )
 
                 print(f"  → Transcribing {window_start_s:.1f}s – {window_end_s:.1f}s")
 
