@@ -2,8 +2,9 @@ import gradio as gr
 import os
 import json
 import wave
-from Sortformer_Whisper import Sortformer_Whisper_Pipeline
 import tempfile
+from pathlib import Path
+from Sortformer_Whisper import Sortformer_Whisper_Pipeline
 
 # Initialize pipeline (loads config and models)
 pipeline = Sortformer_Whisper_Pipeline(config_path="config.ini")
@@ -212,21 +213,30 @@ def transcribe_audio(audio_file_path):
     if audio_file_path is None:
         empty = '<div style="color:#888;font-family:sans-serif;">Please upload an audio file.</div>'
         return empty, empty, empty
-    mixed_list_path = audio_file_path + "_list.txt"
+
+    output_dir     = tempfile.mkdtemp()
+    output_filename = "gradio_hypothesis_multi.jsonl"
+
+    # Write a temporary audio list file for the pipeline
+    mixed_list_path = os.path.join(output_dir, "audio_list.txt")
     with open(mixed_list_path, "w") as f:
         f.write(audio_file_path + "\n")
-    output_dir = tempfile.mkdtemp()
-    output_filename = "gradio_hypothesis_multi.jsonl"
-    masks = pipeline.run_pipeline(mixed_list_path=mixed_list_path, output_dir=output_dir, output_filename=output_filename)
-    print("Diarization masks:", {k: v.shape for k, v in masks.items()})
-    result_path = os.path.join(output_dir, output_filename)
+
+    masks = pipeline.run_pipeline(
+        mixed_list_path=mixed_list_path,
+        output_dir=output_dir,
+        output_filename=output_filename,
+    )
+
     audio_duration = get_audio_duration(audio_file_path)
-    diar_html = build_diarization_html(masks, audio_duration)
-    if os.path.exists(result_path):
-        with open(result_path, "r") as f:
-            raw = f.read()
+    diar_html      = build_diarization_html(masks, audio_duration)
+
+    result_path = Path(output_dir) / output_filename
+    if result_path.exists():
+        raw = result_path.read_text(encoding="utf-8")
         timeline_html, chat_html = format_output(raw, audio_duration)
         return diar_html, timeline_html, chat_html
+
     empty = '<div style="color:#888;font-family:sans-serif;">No output generated.</div>'
     return diar_html, empty, empty
 
@@ -248,4 +258,4 @@ with gr.Blocks(title="Sortformer Whisper DiCoW") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", server_port=7860)

@@ -145,7 +145,7 @@ class Sortformer_Whisper_Pipeline:
     def step3_run_transcription(self, manifest_path: str, masks: Dict[str, torch.Tensor], output_dir: str, output_filename: str = "hypothesis_multi.jsonl"):
         """
         STEP 3: Run DiCoW transcription with masks (in-memory, no .pt files).
-        
+
         Args:
             manifest_path: Path to dataset_manifest.json
             masks: Dict[audio_name] = mask from step 2
@@ -157,15 +157,30 @@ class Sortformer_Whisper_Pipeline:
         print("="*60)
         print(f"Masks: {len(masks)} audio files (in memory)")
         print(f"Output: {output_dir}")
-        print(f"Output filename: {output_filename}")
-        
+
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Pass masks directly to transcriber - no .pt files needed
-        self.transcriber.transcribe_with_masks(manifest_path, masks, output_dir, output_filename)
-        
-        print(f"✓ Transcriptions saved to {output_dir}")
-        print(f"✓ All masks processed directly from memory (no temp files)")
+
+        with open(manifest_path) as f:
+            manifest_items = [json.loads(l) for l in f]
+
+        all_segments = []
+        for item in manifest_items:
+            audio_path = item["audio_filepath"]
+            audio_name = os.path.basename(audio_path).replace(".wav", "")
+            if audio_name not in masks:
+                print(f"⚠ No mask for {audio_name}, skipping")
+                continue
+            segments = self.transcriber.transcribe_with_masks(audio_path, masks[audio_name])
+            for seg in segments:
+                seg["session_id"] = audio_name
+            all_segments.extend(segments)
+
+        out_path = Path(output_dir) / output_filename
+        with open(out_path, "w", encoding="utf-8") as f:
+            for seg in all_segments:
+                f.write(json.dumps(seg) + "\n")
+
+        print(f"✓ Saved {len(all_segments)} segments → {out_path}")
     
 
     
