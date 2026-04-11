@@ -85,94 +85,41 @@ class DiCoWTranscriber:
     
 
 
-    def transcribe_with_masks(self, manifest_path: str, masks: Dict[str, torch.Tensor], output_dir: str, output_filename: str = "hypothesis_multi.jsonl"):
+    def transcribe_with_masks(
+        self,
+        audio,
+        diarization_mask: torch.Tensor,
+    ) -> List[dict]:
         """
-        Transcribe audio files using diarization masks for all speakers.
-        Outputs JSONL format for scoring_dicow.
-        
+        Transcribe a single audio with its diarization mask.
+
         Args:
-            manifest_path: Path to dataset_manifest.json
-            masks: Dict[audio_name] = mask (torch.Tensor with shape [num_speakers, num_frames])
-            output_dir: Output directory for transcriptions
-            output_filename: Name for the output JSONL file (default: "hypothesis_multi.jsonl")
+            audio:             file path (str) or float32 numpy/torch array at 16kHz.
+            diarization_mask:  tensor of shape [num_speakers, num_frames] at 50 fps.
+
+        Returns:
+            list of segment dicts (speaker, start_time, end_time, words).
         """
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Load manifest
-        with open(manifest_path, "r") as f:
-            manifest_items = [json.loads(line) for line in f.readlines()]
-        
-        print(f"Processing {len(manifest_items)} audio files...")
-        
-        hypothesis_multi = []
-        
-        # Process each audio file
-        for item in tqdm(manifest_items):
-            print(f"\nProcessing: {item['audio_filepath']}")
-            mixed_audio_path = item["audio_filepath"]
-            mixed_audio_name = os.path.basename(mixed_audio_path).replace(".wav", "")
-            
-            # Get mask from dictionary
-            if mixed_audio_name not in masks:
-                print(f"⚠ Warning: No mask found for {mixed_audio_name}, skipping")
+        if isinstance(audio, str):
+            pipeline_input = {"audio_filepath": audio, "diarization_mask": diarization_mask}
+        else:
+            pipeline_input = {"audio": audio, "diarization_mask": diarization_mask}
+
+        result = self.pipeline(pipeline_input, return_timestamps=True)
+
+        segments = []
+        for spk_idx, speaker_transcription in enumerate(result.get("per_spk_outputs", [])):
+            if not speaker_transcription or not speaker_transcription.strip():
                 continue
-            
-            diarization_mask = masks[mixed_audio_name]
-            num_speakers = diarization_mask.shape[0]
-            
-            # session_id = file name
-            session_id = mixed_audio_name
-            
-            # Set mask on pipeline
-            self.pipeline.diarization_mask = diarization_mask
-            
-            # Run inference for all speakers
-            inputs = {
-                "audio_filepath": mixed_audio_path
-            }
-            result = self.pipeline(inputs, return_timestamps=True)
-            
-            # Get transcription list - one per speaker
-            speaker_transcriptions = result.get("per_spk_outputs", [])
-            
-            # Process each speaker's transcription
-            for spk_idx, speaker_transcription in enumerate(speaker_transcriptions):
-                if not speaker_transcription or speaker_transcription.strip() == '':
-                    continue
-                
-                # Clean transcription using pipeline's postprocess_text
-                processed_text = speaker_transcription
-                
-                # Extract segments with timing
-                segments = self._extract_segments_with_timing(processed_text)
-                
-                speaker_id = f"speaker_{spk_idx}"
-                
-                # Add each segment to hypothesis_multi with actual timing
-                for start_time, end_time, text in segments:
-                    if text.strip():
-                        hypothesis_multi.append({
-                            "session_id": session_id,
-                            "speaker": speaker_id,
-                            "start_time": start_time,
-                            "end_time": end_time,
-                            "words": text
-                        })
-                
-                if segments:
-                    print(f"  ✓ {session_id} - {speaker_id}: {len(segments)} segments")
-            
-            # Reset mask for next iteration
-            self.pipeline.diarization_mask = None
-        
-        # Write JSONL files
-        multi_path = Path(output_dir) / output_filename
-        
-        with open(multi_path, "w", encoding="utf-8") as f:
-            for item in hypothesis_multi:
-                f.write(json.dumps(item) + "\n")
-        
-        print(f"\n✓ Saved {len(hypothesis_multi)} predictions to {multi_path}")
+            for start_time, end_time, text in self._extract_segments_with_timing(speaker_transcription):
+                if text.strip():
+                    segments.append({
+                        "speaker":    f"speaker_{spk_idx}",
+                        "start_time": start_time,
+                        "end_time":   end_time,
+                        "words":      text,
+                    })
+        return segments
     
     @staticmethod
     def _extract_segments_with_timing(processed_text: str) -> List[Tuple[float, float, str]]:

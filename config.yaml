@@ -1,0 +1,53 @@
+# =============================================================================
+# Sortformer_Whisper_Streaming — unified configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Streaming Sortformer
+# -----------------------------------------------------------------------------
+sortformer:
+  model_path: /home/users/ntu/d230009/scratch/Sortformer_Whisper/Sortformer/diar_streaming_sortformer_4spk-v2.1.nemo
+
+  # Chunk length in diarization frames.
+  # 1 diar-frame = subsampling_factor (8) × mel_stride (10ms) = 80ms
+  # chunk_len = 6  →  6 × 80ms = 480ms of audio per chunk
+  chunk_len: 6
+
+  # FIFO queue length in diarization frames (recent context window)
+  fifo_len: 188
+
+  # Speaker cache length in diarization frames (long-term speaker memory)
+  spkcache_len: 188
+
+  # How often (in diar-frames) the oldest FIFO frames are promoted to speaker cache
+  spkcache_update_period: 144
+
+  # Sigmoid threshold for binarising Sortformer output probabilities
+  pred_threshold: 0.5
+
+# -----------------------------------------------------------------------------
+# DiCoW transcription model
+# -----------------------------------------------------------------------------
+dicow:
+  model_path: /home/users/ntu/d230009/scratch/Sortformer_Whisper/model/DiCoW
+
+  # Language code passed to DiCoW/Whisper decoder
+  language: en
+
+  # Task: "transcribe" or "translate"
+  task: transcribe
+
+# -----------------------------------------------------------------------------
+# Streaming pipeline behaviour
+# -----------------------------------------------------------------------------
+pipeline:
+  # Seconds of audio to accumulate before calling DiCoW.
+  # Lower = more responsive but less context for the ASR model.
+  # Must be >= sortformer.chunk_len × 80ms (i.e. >= 0.48s).
+  transcription_interval_s: 30
+
+  # Output directory for JSONL results
+  output_dir: output
+
+  # Output filename
+  output_filename: streaming_hypothesis.jsonl

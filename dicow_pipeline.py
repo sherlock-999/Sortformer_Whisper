@@ -51,22 +51,27 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
     ############################################
     def preprocess(self, inputs, chunk_length_s=0, stride_length_s=None):
 
-        mixed_audio_path = inputs["audio_filepath"]
-        # enrollment_audio_path = inputs.get("enrollment_audio_path", None)
-
         print("+--------------------------------+")
         print("|          Preprocessing         |")
         print("+--------------------------------+")
 
         ####################################################
-        # 1️⃣ Resample audio
+        # 1️⃣ Load audio — numpy array (streaming) or file path (offline)
         ####################################################
-        print("1. Resampling audio to 16kHz...")
-
-        mixed_input_aud, sr = libr_load(mixed_audio_path, sr=16000, mono=True)
-        sf_write(mixed_audio_path, mixed_input_aud, sr, format="wav")
-
-        print("input to diarization:", mixed_audio_path)
+        if "audio" in inputs:
+            # Streaming path: caller passes float32 numpy array at 16kHz directly.
+            # super().preprocess() accepts {"array": np.ndarray, "sampling_rate": int}.
+            mixed_input_aud = inputs["audio"]
+            audio_source = {"array": mixed_input_aud, "sampling_rate": 16000}
+            print("1. Using in-memory audio array.")
+        else:
+            # Original offline path: load from file, resample, write back.
+            mixed_audio_path = inputs["audio_filepath"]
+            print("1. Resampling audio to 16kHz...")
+            mixed_input_aud, sr = libr_load(mixed_audio_path, sr=16000, mono=True)
+            sf_write(mixed_audio_path, mixed_input_aud, sr, format="wav")
+            audio_source = {"array": mixed_input_aud, "sampling_rate": 16000}
+            print("input to diarization:", mixed_audio_path)
         print()
 
         ####################################################
@@ -74,12 +79,14 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
         ####################################################
         print("2. Loading diarization mask...")
 
-        # Use in-memory mask if available, otherwise load from disk
-        if self.diarization_mask is not None:
+        if "diarization_mask" in inputs:
+            diarization_mask = inputs["diarization_mask"]
+            print("Using diarization mask from input dict")
+        elif self.diarization_mask is not None:
             diarization_mask = self.diarization_mask
             print("Using in-memory diarization mask")
         else:
-            audio_name = os.path.basename(mixed_audio_path).replace(".wav", "")
+            audio_name = os.path.basename(inputs["audio_filepath"]).replace(".wav", "")
             diar_mask_path = os.path.join("diarisation_masks", f"{audio_name}_mask.pt")
             diarization_mask = torch.load(diar_mask_path)
             print(f"Loaded mask from disk: {diar_mask_path}")
@@ -90,7 +97,7 @@ class DiCoW_Pipeline(AutomaticSpeechRecognitionPipeline):
         # 3️⃣ Run base Whisper preprocessing
         ####################################################
         generator = super().preprocess(
-            mixed_audio_path,
+            audio_source,
             chunk_length_s=chunk_length_s,
             stride_length_s=stride_length_s
         )
