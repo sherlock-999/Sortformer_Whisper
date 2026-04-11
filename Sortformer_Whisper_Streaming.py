@@ -176,7 +176,8 @@ class Sortformer_Whisper_Streaming_Pipeline:
         accumulated_mask  = None   # [n_spk, T_frames] float32 CPU tensor
         window_start_s    = 0.0
 
-        all_results = []
+        all_results  = []
+        full_mask    = None  # full-file 50fps DiCoW mask, built window by window
         pos = 0
 
         while pos < len(audio_full):
@@ -217,6 +218,12 @@ class Sortformer_Whisper_Streaming_Pipeline:
                     accumulated_mask, window_duration_s, session_id
                 )
 
+                # Accumulate into full-file mask
+                full_mask = (
+                    dicow_mask if full_mask is None
+                    else torch.cat([full_mask, dicow_mask], dim=1)
+                )
+
                 print(f"  → Transcribing {window_start_s:.1f}s – {window_end_s:.1f}s")
 
                 for seg in self.transcriber.transcribe_with_masks(accumulated_audio, dicow_mask):
@@ -237,7 +244,7 @@ class Sortformer_Whisper_Streaming_Pipeline:
                 accumulated_mask  = None
 
         print(f"  ✓ {len(all_results)} segments.")
-        return all_results
+        return all_results, full_mask
 
     # ------------------------------------------------------------------
     def run_pipeline(
@@ -274,12 +281,16 @@ class Sortformer_Whisper_Streaming_Pipeline:
         output_path = Path(out_dir) / out_file
 
         all_results = []
+        masks       = {}
         for audio_path in audio_paths:
-            segments = self.process_audio_file(
+            session_id = os.path.basename(audio_path).replace(".wav", "")
+            segments, full_mask = self.process_audio_file(
                 audio_path               = audio_path,
                 transcription_interval_s = transcription_interval_s,
             )
             all_results.extend(segments)
+            if full_mask is not None:
+                masks[session_id] = full_mask
 
         with open(output_path, "w", encoding="utf-8") as f:
             for entry in all_results:
@@ -288,7 +299,7 @@ class Sortformer_Whisper_Streaming_Pipeline:
         print(f"\n{'='*60}")
         print(f"✓ Saved {len(all_results)} segments → {output_path}")
         print(f"{'='*60}")
-        return all_results
+        return masks
 
 
 # ---------------------------------------------------------------------------
